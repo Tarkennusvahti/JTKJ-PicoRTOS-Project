@@ -531,7 +531,7 @@ void init_veml6030() {
 
 // Read light level from VEML6030
 // Ligt in LUX
-// Note: sampling time should be > IT -> in this case it has been 100ms by defintion. 
+// Note: sampling time should be > IT -> in this case it has been 100ms by defintion.
 uint32_t veml6030_read_light() {
 
     // Exercise 2: In order to get the luminance we need to read the value of the VEML6030_ALS_REG (see VEML6030 datasheet)
@@ -552,7 +552,16 @@ uint32_t veml6030_read_light() {
     //            Tee tarvittavat bittikohtaiset operaatiot tallettaksesi tuloksen 16-bittiseen rekisteriin.
     //            Kerro arvo sopivalla kertoimella huomioiden 100 ms integraatioaika ja vahvistus 1/8
     //            käyttäen VEML6030-datalehden sivun 5 tietoja.
-    //            Lopuksi tallenna arvo muuttujaan luxVal_uncorrected.
+    //            Lopuksi tallenna arvo muuttujaan luxVal_uncorrected. palaa tänne
+    uint8_t txBuffer[1] = {VEML6030_ALS_REG};
+    uint8_t rxBuffer[2];
+
+    i2c_write_blocking(i2c_default, VEML6030_I2C_ADDR, txBuffer, 1, true);
+    i2c_read_blocking(i2c_default, VEML6030_I2C_ADDR, rxBuffer, 2, false);
+
+    uint16_t raw = ((uint16_t)rxBuffer[1] << 8) | rxBuffer[0];
+    return raw * 0.5376;
+    
   
     uint32_t luxVal_uncorrected = 0; 
     if (luxVal_uncorrected>1000){
@@ -689,7 +698,7 @@ void hdc2021_set_low_humidity_threshold(float humid) {
     hdc2021_triggerMeasurement();
 }
 
-// Note that sampling rate is 1Hz
+// Note that sampling rate is 1Hz    palaa tänne
 float hdc2021_read_temperature() {
     uint8_t reg = HDC2021_TEMP_LOW;
     uint8_t data[2];
