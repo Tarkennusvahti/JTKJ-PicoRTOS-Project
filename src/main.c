@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <string.h>
-#include <math.h>
 
 #include <pico/stdlib.h>
 
@@ -14,83 +13,81 @@
 #define CDC_ITF_TX      1
 
 // Tilakone
-enum state { REPOSE = 0, DETECTED_RIGHT, DETECTED_LEFT, WAIT_FOR_REPOSE };
-volatile enum state programState = REPOSE;
+enum state { LISTEN = 0, DETECTED_RIGHT, DETECTED_LEFT, WAIT_FOR_RESETTING };
+volatile enum state programState = LISTEN;
+
 // Globaalit muuttujat datan tallentamista varten 
-volatile float g_accel_x = 0.0f, g_accel_y = 0.0f, g_accel_z = 1.0f;
-volatile float g_gyro_x = 0.0f, g_gyro_y = 0.0f, g_gyro_z = 0.0f;
+volatile float g_accel_x = 0.0, g_accel_y = 0.0, g_accel_z = 1.0;
+volatile float g_gyro_x = 0.0, g_gyro_y = 0.0, g_gyro_z = 0.0;
 
-
+// Funtkio muokattu laittamaan välilyönti.
 static void btn_fxn(uint gpio, uint32_t eventMask) {
-    // Vaihtaa punaisen LEDin tilaa
-    toggle_led();
+    printf(" \n");
+    buzzer_play_tone(1000, 50);
 }
 
+// AI: Claude Sonnet 4.5
+// Prompt(?): Muuta funktio lukemaan dataa sensorilta ICM42670 ja päivittämään globaalit muuttujat jatkuvasti
+// Muokattu funktioon oikeat kutsut mm. ICM42670_start_with_default_values. Muokattu aikoja sekä kommentteja.
 static void sensor_task(void *arg){
     (void)arg;
 
     // Käynnistetään ICM42670-sensori oletusarvoilla
     if (ICM42670_start_with_default_values() != 0) {
         printf("IMU-sensorin käynnistys epäonnistui! Taski pysähtyy.\n");
-        while(1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+        for(;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
-   
+
     // Muuttujat datan lukemista varten
     float ax, ay, az, gx, gy, gz, t;
 
+    // Luetaan dataa ikuisessa loopissa
     for(;;){
-        
-        // Luetaan data sensorilta
         ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t);
 
-    // Tallennetaan uusin anturidata globaaleihin muuttujiin
-    g_accel_x = ax;
-    g_accel_y = ay;
-    g_accel_z = az;
-    g_gyro_x = gx;
-    g_gyro_y = gy;
-    g_gyro_z = gz;
+        // Tallennetaan uusin data globaaleihin muuttujiin
+        g_accel_x = ax;
+        g_accel_y = ay;
+        g_accel_z = az;
+        g_gyro_x = gx;
+        g_gyro_y = gy;
+        g_gyro_z = gz;
 
-    // En tiedä mikä tämä on, mutta ilmeisesti tarvitaan
-    vTaskDelay(pdMS_TO_TICKS(1000));
+        // Kuinka monta kertaa sekunnissa dataa luetaan, atm kahdesti sekunnissa
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
 static void morse_task(void *arg){
     (void)arg;
 
-    // Threshold-arvot: odotetaan täsmällisiä arvoja (-1,0,1), mutta salli pieni toleranssi
-    const float tol = 0.25f; // säädä tarvittaessa
-
     for(;;){
         float ax = g_accel_x;
         float az = g_accel_z;
 
         // Tarkista oikea käännös: x ~= 1 ja z ~= 0
-        if (programState == REPOSE) {
-            if (fabsf(ax - 1.0f) <= tol && fabsf(az - 0.0f) <= tol) {
-                // Vasen -> '.'
+        if (programState == LISTEN) {
+
+            // Tarkista vasen käännös: x ~= -1 ja z ~= 0
+            if (ax > -1.5 && ax < -0.5 && az < 0.5 && az > -0.5) {
                 printf(".");
-                fflush(stdout);
-                buzzer_play_tone(1000, 100); // Soita 1000 Hz sävel 100 ms
-                programState = WAIT_FOR_REPOSE; // odota lepoasentoon paluuta
-            } else if (fabsf(ax - (-1.0f)) <= tol && fabsf(az - 0.0f) <= tol) {
-                // Oikea -> '_'
-                printf("_");
-                fflush(stdout);
-                buzzer_play_tone(1000, 500);
-                programState = WAIT_FOR_REPOSE; // odota lepoasentoon paluuta
-            }
-        } else if (programState == WAIT_FOR_REPOSE) {
-            // Odotetaan lepoasentoa: x ~= 0 ja z ~= 1
-            if (fabsf(ax - 0.0f) <= tol && fabsf(az - 1.0f) <= tol) {
-                // Palattu lepoasentoon -> palaa REPOSE-tilaan ja odota seuraavaa käännöstä
-                programState = REPOSE;
                 toggle_led();
                 buzzer_play_tone(4000, 100);
-                vTaskDelay(pdMS_TO_TICKS(100));
+                programState = WAIT_FOR_RESETTING;
+
+            // Tarkista oikea käännös: x ~= 1 ja z ~= 0
+            } else if (ax < 1.5 && ax > 0.5 && az < 0.5 && az > -0.5) {
+                printf("_");
                 toggle_led();
-                // Lähetä lineaali, ei tulostusta nyt. Seuraava käännös tulostaa merkin.
+                buzzer_play_tone(1000, 500);
+                programState = WAIT_FOR_RESETTING;
+            }
+
+        } else if (programState == WAIT_FOR_RESETTING) {
+            // Tarkista lepoasento: x ~= 0 ja z ~= 1
+            if (ax < 0.5 && ax > -0.5 && az > 0.5) {
+                programState = LISTEN;
+                toggle_led();
             }
         }
 
@@ -107,6 +104,10 @@ static void usbTask(void *arg) {
     }
 }*/
 
+
+// AI: Claude Sonnet 4.5
+// Prompt(?): Analysoi koodi main.c ja muokkaa main funktio toimivaksi. Älä luo uutta, muokkaa olemassa olevaa.
+// Lisätty buzzerin alustus ja init_hat_sdk jonka AI poisti.
 int main() {
     stdio_init_all();
     
