@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <pico/stdlib.h>
 
@@ -11,20 +12,42 @@
 
 #define DEFAULT_STACK_SIZE 2048
 #define CDC_ITF_TX      1
+#define DEBOUNCE_TIME 500
+
 
 // Tilakone
 enum state { LISTEN = 0, DETECTED_RIGHT, DETECTED_LEFT, WAIT_FOR_RESETTING };
 volatile enum state programState = LISTEN;
 
+
 // Globaalit muuttujat datan tallentamista varten 
 volatile float g_accel_x = 0.0, g_accel_y = 0.0, g_accel_z = 1.0;
 volatile float g_gyro_x = 0.0, g_gyro_y = 0.0, g_gyro_z = 0.0;
 
-// Funtkio muokattu laittamaan välilyönti.
+
+// Ongelma: nappia painaessa välilyöntejä tuli useampi, duck.ai hakukoneen esimerkistä mallia
+// ottaen luotu yksinkertainen debouncaus käyttäen <time.h> kirjastoa. 
 static void btn_fxn(uint gpio, uint32_t eventMask) {
-    printf(" \n");
-    buzzer_play_tone(1000, 50);
+    static uint32_t last_press_time = 0;
+    uint32_t current_time = to_ms_since_boot(get_absolute_time());
+
+    // Käsitellään vain ylösreuna ja suodatetaan bounce tällä yksinkertaisella debouncella
+    if (gpio == SW2_PIN) {
+        if ((current_time - last_press_time > DEBOUNCE_TIME)) {
+            last_press_time = current_time;
+            printf("\n");
+            buzzer_play_tone(1000, 50);
+        }
+    }
+    else if (gpio == SW1_PIN) {
+        if ((current_time - last_press_time > DEBOUNCE_TIME)) {
+            last_press_time = current_time;
+            toggle_led();
+            // Lisää tänne jotain omainisuuksia tulevaisuudessa
+        }
+    }
 }
+
 
 // AI: Claude Sonnet 4.5
 // Prompt(?): Muuta funktio lukemaan dataa sensorilta ICM42670 ja päivittämään globaalit muuttujat jatkuvasti
@@ -58,6 +81,9 @@ static void sensor_task(void *arg){
     }
 }
 
+
+// Funktio tutkii kiihtyvyysanturin dataa ja muokkaa tilakonetta sekä palauttaa käyttäjälle
+// feedbackia LED:illä ja summerilla. Printtaa myös pisteet ja viivat serial monitoriin.
 static void morse_task(void *arg){
     (void)arg;
 
@@ -117,9 +143,10 @@ int main() {
 
     init_buzzer();
     init_button1();
+    init_button2();
     init_red_led();
-    gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_FALL, true, btn_fxn);
-
+    gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
+    gpio_set_irq_enabled_with_callback(SW2_PIN, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
     
     TaskHandle_t hSensorTask, hPrintTask, hUSB = NULL;
 
