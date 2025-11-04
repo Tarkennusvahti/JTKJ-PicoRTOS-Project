@@ -12,12 +12,16 @@
 
 #define DEFAULT_STACK_SIZE 2048
 #define CDC_ITF_TX      1
-#define DEBOUNCE_TIME 500
+#define DEBOUNCE_TIME 250
 
 
-// Tilakone
+// Tilakone morsetukselle
 enum state { LISTEN = 0, DETECTED_RIGHT, DETECTED_LEFT, WAIT_FOR_RESETTING };
 volatile enum state programState = LISTEN;
+
+// Tilakone printtaukselle
+enum printState { LISTEN_PRINT = 0, BUTTON1_PRESSED, BUTTON2_PRESSED };
+volatile enum printState printState = LISTEN_PRINT;
 
 
 // Globaalit muuttujat datan tallentamista varten 
@@ -32,17 +36,20 @@ static void btn_fxn(uint gpio, uint32_t eventMask) {
     uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
     // Käsitellään vain ylösreuna ja suodatetaan bounce tällä yksinkertaisella debouncella
-    if (gpio == SW2_PIN) {
+    if (gpio == SW2_PIN && (eventMask & GPIO_IRQ_EDGE_RISE)) {
         if ((current_time - last_press_time > DEBOUNCE_TIME)) {
             last_press_time = current_time;
+            printState = BUTTON2_PRESSED;
+            /* 
             printf("\n");
             buzzer_play_tone(1000, 50);
+            write_text("sda");
+             */
         }
     }
-    else if (gpio == SW1_PIN) {
+    else if (gpio == SW1_PIN && (eventMask & GPIO_IRQ_EDGE_RISE)) {
         if ((current_time - last_press_time > DEBOUNCE_TIME)) {
             last_press_time = current_time;
-            toggle_led();
             // Lisää tänne jotain omainisuuksia tulevaisuudessa
         }
     }
@@ -63,12 +70,9 @@ static void sensor_task(void *arg){
         ICM42670_read_sensor_data(&px, &py, &pz, &ax, &ay, &az, &t);
 
         // Tallennetaan uusin data globaaleihin muuttujiin
+        // Poistetu turhat muuttujat, käytetään vain x ja z akselia
         pos_x = px;
-        pos_y = py;
         pos_z = pz;
-        accel_x = ax;
-        accel_y = ay;
-        accel_z = az;
 
         // Kuinka monta kertaa sekunnissa dataa luetaan, atm kahdesti sekunnissa
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -115,6 +119,24 @@ static void morse_task(void *arg){
     }
 }
 
+static void print_task(void *arg){
+    (void)arg;
+
+    for(;;){
+        if (printState == BUTTON1_PRESSED) {
+            printf("Button 1 pressed!\n");
+            toggle_led();
+            printState = LISTEN_PRINT;
+        } else if (printState == BUTTON2_PRESSED) {
+            printf("\n");
+            buzzer_play_tone(1000, 50);
+            printState = LISTEN_PRINT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+
 
 // AI: Claude Sonnet 4.5
 // Prompt(?): Analysoi koodi main.c ja muokkaa main funktio toimivaksi. Älä luo uutta, muokkaa olemassa olevaa.
@@ -132,20 +154,31 @@ int main() {
     init_button1();
     init_button2();
     init_red_led();
+    init_display();
+    clear_display();
+
+    // Asetetaan keskeytyksen käsittelijät
     gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
     gpio_set_irq_enabled_with_callback(SW2_PIN, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
-    
-    TaskHandle_t hSensorTask, hPrintTask, hUSB = NULL;
 
-    // Luodaan taskit
+    TaskHandle_t hSensorTask, hMorseTask, hPrintTask = NULL;
+
+    // Luodaan taskit pyörimään taustalle ja tarkistetaan onnistuiko
     BaseType_t result = xTaskCreate(sensor_task, "sensor", DEFAULT_STACK_SIZE, NULL, 2, &hSensorTask);
     if(result != pdPASS) {
         printf("Sensor task creation failed\n");
         return 0;
     }
-    result = xTaskCreate(morse_task, "morse", DEFAULT_STACK_SIZE, NULL, 2, &hPrintTask);
+
+    result = xTaskCreate(morse_task, "morse", DEFAULT_STACK_SIZE, NULL, 2, &hMorseTask);
     if(result != pdPASS) {
-        printf("Print Task creation failed\n");
+        printf("Morse Task creation failed\n");
+        return 0;
+    }
+
+    result = xTaskCreate(print_task, "print", DEFAULT_STACK_SIZE, NULL, 2, &hPrintTask);
+    if(result != pdPASS) {
+        printf("Print Task (CMD) creation failed\n");
         return 0;
     }
 
