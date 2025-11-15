@@ -13,7 +13,38 @@
 #define DEFAULT_STACK_SIZE 2048
 #define CDC_ITF_TX      1
 #define DEBOUNCE_TIME 250
+#define INPUT_BUFFER_SIZE 256
 
+// Morsekooditaulukko
+static const char *morse_table[] = {
+    ".-",      // A
+    "-...",    // B
+    "-.-.",    // C
+    "-..",     // D
+    ".",       // E
+    "..-.",    // F
+    "--.",     // G
+    "....",    // H
+    "..",      // I
+    ".---",    // J
+    "-.-",     // K
+    ".-..",    // L
+    "--",      // M
+    "-.",      // N
+    "---",     // O
+    ".--.",    // P
+    "--.-",    // Q
+    ".-.",     // R
+    "...",     // S
+    "-",       // T
+    "..-",     // U
+    "...-",    // V
+    ".--",     // W
+    "-..-",    // X
+    "-.--",    // Y
+    "--..",    // Z
+    NULL       // Lopetus
+};
 
 // Tilakone morsetukselle
 enum state { LISTEN = 0, DETECTED_RIGHT, DETECTED_LEFT, WAIT_FOR_RESETTING };
@@ -55,9 +86,8 @@ static void btn_fxn(uint gpio, uint32_t eventMask) {
     }
 }
 
-
 // AI: Claude Sonnet 4.5
-// Prompt(?): Muuta funktio lukemaan dataa sensorilta ICM42670 ja päivittämään globaalit muuttujat jatkuvasti
+// Prompt: Muuta funktio lukemaan dataa sensorilta ICM42670 ja päivittämään globaalit muuttujat jatkuvasti
 // Muokattu funktioon oikeat kutsut mm. ICM42670_start_with_default_values. Muokattu aikoja sekä kommentteja.
 static void sensor_task(void *arg){
     (void)arg;
@@ -101,7 +131,7 @@ static void morse_task(void *arg){
 
             // Tarkista oikea käännös: x ~= 1 ja z ~= 0
             } else if (px < 1.5 && px > 0.5 && pz < 0.5 && pz > -0.5) {
-                printf("_");
+                printf("-");
                 toggle_led();
                 buzzer_play_tone(1000, 500);
                 programState = WAIT_FOR_RESETTING;
@@ -119,6 +149,9 @@ static void morse_task(void *arg){
     }
 }
 
+
+// Taski tarkistaa tilakoneen avulla nappien tilaa ja toteuttaa sen mukaiset toimenpiteet.
+// Korjasi kriittisen ongelman, jossa ohjelma kaatui kun kutsu tuli isr sisällä
 static void print_task(void *arg){
     (void)arg;
 
@@ -137,9 +170,86 @@ static void print_task(void *arg){
 }
 
 
+// Dekoodaa yksittäinen morse-merkkijono kirjaimeksi
+char decode_morse(const char *morse) {
+    // Tarkista kirjaimet A-Z
+    for (int i = 0; i < 26; i++) {
+        if (strcmp(morse, morse_table[i]) == 0) {
+            return 'A' + i;
+        }
+    }
+    return '?';  // Tuntematon koodi
+    }
+
+
+// Dekoodaa koko morse-viesti (välilyönnit erottavat kirjaimet)
+void decode_morse_message(const char *morse_input, char *output, size_t output_size) {
+    char temp[INPUT_BUFFER_SIZE];
+    strncpy(temp, morse_input, INPUT_BUFFER_SIZE - 1);
+    temp[INPUT_BUFFER_SIZE - 1] = '\0';
+    
+    size_t out_idx = 0;
+    char *token = strtok(temp, " ");  // Pilko välilyöntien kohdalta
+    
+    while (token != NULL && out_idx < output_size - 1) {
+        char decoded = decode_morse(token);
+        output[out_idx++] = decoded;
+        token = strtok(NULL, " ");
+    }
+    
+    output[out_idx] = '\0';
+}
+
+static void receive_task(void *arg){
+    (void)arg;
+    char line[INPUT_BUFFER_SIZE];
+    size_t index = 0;
+    
+    for(;;){
+        //OPTION 1
+        // Using getchar_timeout_us https://www.raspberrypi.com/documentation/pico-sdk/runtime.html#group_pico_stdio_1ga5d24f1a711eba3e0084b6310f6478c1a
+        // take one char per time and store it in line array, until reeceived the \n
+        // The application should instead play a sound, or blink a LED. 
+        int c = getchar_timeout_us(0);
+        if (c != PICO_ERROR_TIMEOUT){// I have received a character
+            if (c == '\r') continue; // ignore CR, wait for LF if (ch == '\n') { line[len] = '\0';
+            if (c == '\n'){
+                // terminate and process the collected line
+                line[index] = '\0'; 
+                // DEKOODAA morse-viesti
+                char decoded_message[INPUT_BUFFER_SIZE];
+                decode_morse_message(line, decoded_message, INPUT_BUFFER_SIZE);
+                
+                // Tulosta debug
+                printf("Morse: \"%s\" → \"%s\"\n", line, decoded_message);
+                clear_display();
+                write_text(decoded_message); // Show the morse code on the display
+
+                buzzer_play_tone(2000, 50); // Indicate message received
+                vTaskDelay(pdMS_TO_TICKS(50));
+                buzzer_play_tone(2000, 50);
+
+                index = 0;
+                vTaskDelay(pdMS_TO_TICKS(100)); // Wait for new message
+            }
+            else if(index < INPUT_BUFFER_SIZE - 1){
+                line[index++] = (char)c;
+            }
+            else { //Overflow: print and restart the buffer with the new character. 
+                line[INPUT_BUFFER_SIZE - 1] = '\0';
+                printf("Morsed: %s\n", line);
+                index = 0; 
+                line[index++] = (char)c; 
+            }
+        }
+        else {
+            vTaskDelay(pdMS_TO_TICKS(100)); // Wait for new message
+        }
+    }
+}
 
 // AI: Claude Sonnet 4.5
-// Prompt(?): Analysoi koodi main.c ja muokkaa main funktio toimivaksi. Älä luo uutta, muokkaa olemassa olevaa.
+// Prompt: Analysoi koodi main.c ja muokkaa main funktio toimivaksi. Älä luo uutta, muokkaa olemassa olevaa.
 // Lisätty buzzerin alustus ja init_hat_sdk jonka AI poisti.
 int main() {
     stdio_init_all();
@@ -148,7 +258,8 @@ int main() {
     stdio_init_all();   // Tuki USB:lle
     init_hat_sdk();     // Ledi pois ja i2c alustukset
     sleep_ms(300);      //Wait some time so initialization of USB and hat is done.
-
+    init_ICM42670(); // Alustetaan ICM42670 sensori
+    sleep_ms(300);      // Odotetaan hetki
     ICM42670_start_with_default_values();
     init_buzzer();
     init_button1();
@@ -161,7 +272,7 @@ int main() {
     gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
     gpio_set_irq_enabled_with_callback(SW2_PIN, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
 
-    TaskHandle_t hSensorTask, hMorseTask, hPrintTask = NULL;
+    TaskHandle_t hSensorTask, hMorseTask, hPrintTask, hReceiveTask = NULL;
 
     // Luodaan taskit pyörimään taustalle ja tarkistetaan onnistuiko
     BaseType_t result = xTaskCreate(sensor_task, "sensor", DEFAULT_STACK_SIZE, NULL, 2, &hSensorTask);
@@ -179,6 +290,12 @@ int main() {
     result = xTaskCreate(print_task, "print", DEFAULT_STACK_SIZE, NULL, 2, &hPrintTask);
     if(result != pdPASS) {
         printf("Print Task (CMD) creation failed\n");
+        return 0;
+    }
+
+    result = xTaskCreate(receive_task, "receive", DEFAULT_STACK_SIZE, NULL, 2, &hReceiveTask);
+    if(result != pdPASS) {
+        printf("Receive Task creation failed\n");
         return 0;
     }
 
