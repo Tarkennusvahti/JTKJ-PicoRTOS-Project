@@ -55,9 +55,10 @@ enum printState { LISTEN_PRINT = 0, BUTTON1_PRESSED, BUTTON2_PRESSED };
 volatile enum printState printState = LISTEN_PRINT;
 
 
-// Globaalit muuttujat datan tallentamista varten 
+// Globaalit muuttujat datan tallentamista varten
 volatile float pos_x = 0.0, pos_y = 0.0, pos_z = 1.0;
 volatile float accel_x = 0.0, accel_y = 0.0, accel_z = 0.0;
+char translate[INPUT_BUFFER_SIZE];
 
 
 // Ongelma: nappia painaessa välilyöntejä tuli useampi, duck.ai hakukoneen esimerkistä mallia
@@ -71,17 +72,12 @@ static void btn_fxn(uint gpio, uint32_t eventMask) {
         if ((current_time - last_press_time > DEBOUNCE_TIME)) {
             last_press_time = current_time;
             printState = BUTTON2_PRESSED;
-            /* 
-            printf("\n");
-            buzzer_play_tone(1000, 50);
-            write_text("sda");
-             */
         }
     }
     else if (gpio == SW1_PIN && (eventMask & GPIO_IRQ_EDGE_RISE)) {
         if ((current_time - last_press_time > DEBOUNCE_TIME)) {
             last_press_time = current_time;
-            // Lisää tänne jotain omainisuuksia tulevaisuudessa
+            printState = BUTTON1_PRESSED;
         }
     }
 }
@@ -127,6 +123,10 @@ static void morse_task(void *arg){
                 printf(".");
                 toggle_led();
                 buzzer_play_tone(4000, 100);
+
+                // Lisätään globaaliinmerkkijonoon piste, käännetään myöhemmin
+                strcat(translate, ".");
+
                 programState = WAIT_FOR_RESETTING;
 
             // Tarkista oikea käännös: x ~= 1 ja z ~= 0
@@ -134,6 +134,10 @@ static void morse_task(void *arg){
                 printf("-");
                 toggle_led();
                 buzzer_play_tone(1000, 500);
+
+                // Lisätään globaali merkkijonoon viiva, käännetään myöhemmin
+                strcat(translate, "-");
+
                 programState = WAIT_FOR_RESETTING;
             }
 
@@ -150,36 +154,19 @@ static void morse_task(void *arg){
 }
 
 
-// Taski tarkistaa tilakoneen avulla nappien tilaa ja toteuttaa sen mukaiset toimenpiteet.
-// Korjasi kriittisen ongelman, jossa ohjelma kaatui kun kutsu tuli isr sisällä
-static void print_task(void *arg){
-    (void)arg;
-
-    for(;;){
-        if (printState == BUTTON1_PRESSED) {
-            printf("Button 1 pressed!\n");
-            toggle_led();
-            printState = LISTEN_PRINT;
-        } else if (printState == BUTTON2_PRESSED) {
-            printf("\n");
-            buzzer_play_tone(1000, 50);
-            printState = LISTEN_PRINT;
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-}
-
-
+// AI: Claude Sonnet 4.5
+// Prompt: Luo funktio joka kääntää konsolesta annetun morse-koodin takaisin kirjaimiksi
 // Dekoodaa yksittäinen morse-merkkijono kirjaimeksi
 char decode_morse(const char *morse) {
-    // Tarkista kirjaimet A-Z
+    // Tarkista kirjaimet A-Z ja vertaa niitä morse-koodiin
     for (int i = 0; i < 26; i++) {
         if (strcmp(morse, morse_table[i]) == 0) {
+            // Jos löydetään pari, palautetaan vastaava kirjain ('A' = 65)
             return 'A' + i;
         }
     }
     return '?';  // Tuntematon koodi
-    }
+}
 
 
 // Dekoodaa koko morse-viesti (välilyönnit erottavat kirjaimet)
@@ -199,6 +186,38 @@ void decode_morse_message(const char *morse_input, char *output, size_t output_s
     
     output[out_idx] = '\0';
 }
+
+
+// Taski tarkistaa tilakoneen avulla nappien tilaa ja toteuttaa sen mukaiset toimenpiteet.
+// Korjasi kriittisen ongelman, jossa ohjelma kaatui kun kutsu tuli isr sisällä
+static void print_task(void *arg){
+    (void)arg;
+    char decoded_message[INPUT_BUFFER_SIZE];
+
+    for(;;){
+        if (printState == BUTTON1_PRESSED) {
+            clear_display();
+            decode_morse_message(translate, decoded_message, INPUT_BUFFER_SIZE);
+            printf("\nDecoded message: %s\n", decoded_message);
+            write_text(decoded_message);
+
+            // Tyhjennetään globaali merkkijono
+            translate[0] = '\0';
+
+            printState = LISTEN_PRINT;
+        } else if (printState == BUTTON2_PRESSED) {
+            printf(" ");
+            buzzer_play_tone(1000, 50);
+
+            // Lisätään globaaliin merkkijonoon välilyönti kirjainten erottamiseksi
+            strcat(translate, " ");
+
+            printState = LISTEN_PRINT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 
 static void receive_task(void *arg){
     (void)arg;
