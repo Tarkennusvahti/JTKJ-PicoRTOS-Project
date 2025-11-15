@@ -15,6 +15,17 @@
 #define DEBOUNCE_TIME 250
 #define INPUT_BUFFER_SIZE 256
 
+
+// Funktioiden prototyypit
+static void btn_fxn(uint gpio, uint32_t eventMask);
+static void print_task(void *arg);
+static void sensor_task(void *arg);
+static void morse_task(void *arg);
+static void receive_task(void *arg);
+char decode_morse_letter(const char *morse);
+void decode_morse_message(char *morse_input, char *output, size_t output_size);
+
+
 // Morsekooditaulukko
 static const char *morse_table[] = {
     ".-",      // A
@@ -46,6 +57,7 @@ static const char *morse_table[] = {
     NULL       // Lopetus
 };
 
+
 // Tilakone morsetukselle
 enum state { LISTEN = 0, DETECTED_RIGHT, DETECTED_LEFT, WAIT_FOR_RESETTING };
 volatile enum state programState = LISTEN;
@@ -59,6 +71,7 @@ volatile enum printState printState = LISTEN_PRINT;
 volatile float pos_x = 0.0, pos_y = 0.0, pos_z = 1.0;
 volatile float accel_x = 0.0, accel_y = 0.0, accel_z = 0.0;
 char translate[INPUT_BUFFER_SIZE];
+char temp_morse[INPUT_BUFFER_SIZE];
 
 
 // Ongelma: nappia painaessa välilyöntejä tuli useampi, duck.ai hakukoneen esimerkistä mallia
@@ -81,6 +94,7 @@ static void btn_fxn(uint gpio, uint32_t eventMask) {
         }
     }
 }
+
 
 // AI: Claude Sonnet 4.5
 // Prompt: Muuta funktio lukemaan dataa sensorilta ICM42670 ja päivittämään globaalit muuttujat jatkuvasti
@@ -126,6 +140,8 @@ static void morse_task(void *arg){
 
                 // Lisätään globaaliinmerkkijonoon piste, käännetään myöhemmin
                 strcat(translate, ".");
+                strcat(temp_morse, ".");
+                write_text(temp_morse);
 
                 programState = WAIT_FOR_RESETTING;
 
@@ -137,6 +153,8 @@ static void morse_task(void *arg){
 
                 // Lisätään globaali merkkijonoon viiva, käännetään myöhemmin
                 strcat(translate, "-");
+                strcat(temp_morse, "-");
+                write_text(temp_morse);
 
                 programState = WAIT_FOR_RESETTING;
             }
@@ -156,30 +174,30 @@ static void morse_task(void *arg){
 
 // AI: Claude Sonnet 4.5
 // Prompt: Luo funktio joka kääntää konsolesta annetun morse-koodin takaisin kirjaimiksi
-// Dekoodaa yksittäinen morse-merkkijono kirjaimeksi
-char decode_morse(const char *morse) {
+// Lisätty kommentteja selventämään toimintaa
+// Funktio on apufunktio decode_morse_message funktiolle, decoodaa yhden yksittäisen kirjaimen
+char decode_morse_letter(const char *morse) {
     // Tarkista kirjaimet A-Z ja vertaa niitä morse-koodiin
     for (int i = 0; i < 26; i++) {
         if (strcmp(morse, morse_table[i]) == 0) {
             // Jos löydetään pari, palautetaan vastaava kirjain ('A' = 65)
+            // Esim B kirjaimella, i=1, palautetaan 'A' + 1 = 'B'
             return 'A' + i;
         }
     }
-    return '?';  // Tuntematon koodi
+    return '?';  // Tuntematon morsekoodi
 }
 
 
-// Dekoodaa koko morse-viesti (välilyönnit erottavat kirjaimet)
-void decode_morse_message(const char *morse_input, char *output, size_t output_size) {
-    char temp[INPUT_BUFFER_SIZE];
-    strncpy(temp, morse_input, INPUT_BUFFER_SIZE - 1);
-    temp[INPUT_BUFFER_SIZE - 1] = '\0';
-    
+// Funktio luotu ylläolevan promptin yhteydessä
+// 
+// Muokkaa suoraan syötettä (ei kopioi)
+void decode_morse_message(char *morse_input, char *output, size_t output_size) {
     size_t out_idx = 0;
-    char *token = strtok(temp, " ");  // Pilko välilyöntien kohdalta
+    char *token = strtok(morse_input, " ");  // Muokkaa SUORAAN morse_input:ia
     
     while (token != NULL && out_idx < output_size - 1) {
-        char decoded = decode_morse(token);
+        char decoded = decode_morse_letter(token);
         output[out_idx++] = decoded;
         token = strtok(NULL, " ");
     }
@@ -196,10 +214,16 @@ static void print_task(void *arg){
 
     for(;;){
         if (printState == BUTTON1_PRESSED) {
+            buzzer_play_tone(1000, 50);
             clear_display();
-            decode_morse_message(translate, decoded_message, INPUT_BUFFER_SIZE);
-            printf("\nDecoded message: %s\n", decoded_message);
-            write_text(decoded_message);
+
+            if (translate[0] != '\0') {
+                decode_morse_message(translate, decoded_message, INPUT_BUFFER_SIZE);
+                printf("\nDecoded message: %s\n", decoded_message);
+                write_text(decoded_message);
+            } else {
+                printf("Resetting, clearing display.\n");
+            }
 
             // Tyhjennetään globaali merkkijono
             translate[0] = '\0';
@@ -211,6 +235,8 @@ static void print_task(void *arg){
 
             // Lisätään globaaliin merkkijonoon välilyönti kirjainten erottamiseksi
             strcat(translate, " ");
+            temp_morse[0] = '\0'; // Tyhjennetään väliaikainen morse-merkkijono
+            clear_display();
 
             printState = LISTEN_PRINT;
         }
@@ -267,6 +293,7 @@ static void receive_task(void *arg){
     }
 }
 
+
 // AI: Claude Sonnet 4.5
 // Prompt: Analysoi koodi main.c ja muokkaa main funktio toimivaksi. Älä luo uutta, muokkaa olemassa olevaa.
 // Lisätty buzzerin alustus ja init_hat_sdk jonka AI poisti.
@@ -277,9 +304,11 @@ int main() {
     stdio_init_all();   // Tuki USB:lle
     init_hat_sdk();     // Ledi pois ja i2c alustukset
     sleep_ms(300);      //Wait some time so initialization of USB and hat is done.
+
     init_ICM42670(); // Alustetaan ICM42670 sensori
     sleep_ms(300);      // Odotetaan hetki
     ICM42670_start_with_default_values();
+
     init_buzzer();
     init_button1();
     init_button2();
